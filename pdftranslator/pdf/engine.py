@@ -260,10 +260,12 @@ class PDFEngine:
     def _copy_page_content(src: fitz.Page, dst: fitz.Page, src_doc: fitz.Document) -> None:
         try:
             dst.show_pdf_page(dst.rect, src_doc, src.number)
-        except Exception as exc:
-            _log.warning("show_pdf_page failed (p%d), falling back to pixmap: %s", src.number, exc)
-            pix = src.get_pixmap(dpi=100)
-            dst.insert_image(dst.rect, pixmap=pix)
+        except Exception:
+            try:
+                pix = src.get_pixmap(dpi=100)
+                dst.insert_image(dst.rect, pixmap=pix)
+            except Exception as exc:
+                _log.warning("_copy_page_content: both methods failed: %s", exc)
 
     @staticmethod
     def _copy_images_static(src: fitz.Page, dst: fitz.Page) -> None:
