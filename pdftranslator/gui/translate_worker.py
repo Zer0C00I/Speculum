@@ -62,6 +62,8 @@ class TranslateWorker(QThread):
     def _run_babeldoc(self) -> None:
         if not self._src or not self._src._path or not self._dst:
             raise BabelDocError("BabelDOC backend requires a source PDF path")
+        if not self._job.babeldoc_provider:
+            raise BabelDocError("Missing BabelDOC provider configuration")
         if self._cancelled:
             raise BabelDocError("Translation cancelled")
 
@@ -73,6 +75,7 @@ class TranslateWorker(QThread):
             source_lang=self._job.source_lang,
             target_lang=self._job.target_lang,
             page_numbers=self._job.page_numbers,
+            provider=self._job.babeldoc_provider,
             session_dir=self._job.session_dir,
             verbose=self._job.verbose,
         )

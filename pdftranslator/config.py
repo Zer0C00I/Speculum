@@ -46,6 +46,18 @@ class Config:
         return os.getenv("ANTHROPIC_API_KEY", "")
 
     @staticmethod
+    def openai_api_key() -> str:
+        return os.getenv("OPENAI_API_KEY", "")
+
+    @staticmethod
+    def openai_base_url() -> str:
+        return os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+    @staticmethod
+    def openai_model() -> str:
+        return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    @staticmethod
     def default_provider() -> str:
         return os.getenv("DEFAULT_PROVIDER", "babeldoc-deepseek")
 
@@ -68,6 +80,24 @@ class Config:
         os.environ["ANTHROPIC_API_KEY"] = key
         env_path = _find_or_create_env()
         set_key(env_path, "ANTHROPIC_API_KEY", key)
+
+    @staticmethod
+    def set_openai_api_key(key: str) -> None:
+        os.environ["OPENAI_API_KEY"] = key
+        env_path = _find_or_create_env()
+        set_key(env_path, "OPENAI_API_KEY", key)
+
+    @staticmethod
+    def set_openai_base_url(base_url: str) -> None:
+        os.environ["OPENAI_BASE_URL"] = base_url
+        env_path = _find_or_create_env()
+        set_key(env_path, "OPENAI_BASE_URL", base_url)
+
+    @staticmethod
+    def set_openai_model(model: str) -> None:
+        os.environ["OPENAI_MODEL"] = model
+        env_path = _find_or_create_env()
+        set_key(env_path, "OPENAI_MODEL", model)
 
     @staticmethod
     def set_default_provider(provider: str) -> None:

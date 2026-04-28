@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from pdftranslator.ai.anthropic import AnthropicTranslator
 from pdftranslator.ai.deepseek import DeepSeekTranslator
 from pdftranslator.ai.base import AbstractTranslator
-from pdftranslator.babeldoc_runner import uses_babeldoc
+from pdftranslator.babeldoc_runner import babeldoc_provider_config, uses_babeldoc
 from pdftranslator.config import Config
 from pdftranslator.gui.pdf_viewer import PDFViewer
 from pdftranslator.gui.settings_dialog import SettingsDialog
@@ -33,6 +33,7 @@ LANGUAGE_NAMES = {
 
 PROVIDER_NAMES = {
     "babeldoc-deepseek": "BabelDOC + DeepSeek",
+    "babeldoc-openai": "BabelDOC + OpenAI",
     "deepseek": "DeepSeek (Legacy Overlay)",
     "anthropic": "Anthropic Claude (Legacy Overlay)",
 }
@@ -374,7 +375,7 @@ class MainWindow(QMainWindow):
 
     def _get_provider_key(self, provider: str) -> str:
         try:
-            if provider == "babeldoc-deepseek": return Config.deepseek_api_key()
+            if uses_babeldoc(provider): return babeldoc_provider_config(provider).api_key
             if provider == "deepseek": return Config.deepseek_api_key()
             if provider == "anthropic": return Config.anthropic_api_key()
         except Exception as exc:
@@ -488,6 +489,7 @@ class MainWindow(QMainWindow):
             target_lang=self._target_lang.currentData(),
             page_numbers=pages,
             output_path=str(self._output_path),
+            babeldoc_provider=babeldoc_provider_config(provider_code) if use_babeldoc else None,
             session_dir=str(self._session_dir) if self._session_dir else None,
             verbose=self._chk_verbose.isChecked(),
             page_window_label=self._page_label_text(pages),
@@ -593,7 +595,11 @@ class MainWindow(QMainWindow):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not Config.deepseek_api_key() and not Config.anthropic_api_key():
+        if (
+            not Config.deepseek_api_key()
+            and not Config.openai_api_key()
+            and not Config.anthropic_api_key()
+        ):
             if QMessageBox.warning(self, "API Keys Missing",
                 "No API keys configured.\nOpen Settings now?") == QMessageBox.StandardButton.Yes:
                 self._on_settings()
