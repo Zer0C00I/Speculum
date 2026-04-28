@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -255,6 +256,27 @@ class PDFEngine:
 
     def close(self) -> None:
         self._doc.close()
+
+    def save_atomic(self, path: str) -> None:
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+        try:
+            self._doc.save(tmp.name, garbage=4, deflate=True)
+            shutil.move(tmp.name, path)
+        finally:
+            try:
+                Path(tmp.name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def replace_pages_from_document(self, src_doc: fitz.Document, page_numbers: list[int]) -> None:
+        for page_num in sorted(set(page_numbers), reverse=True):
+            if page_num < 0 or page_num >= self._doc.page_count or page_num >= src_doc.page_count:
+                continue
+            self._doc.delete_page(page_num)
+            self._doc.insert_pdf(src_doc, from_page=page_num, to_page=page_num, start_at=page_num)
 
     @staticmethod
     def _copy_page_content(src: fitz.Page, dst: fitz.Page, src_doc: fitz.Document) -> None:

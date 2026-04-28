@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv, set_key
@@ -46,7 +47,7 @@ class Config:
 
     @staticmethod
     def default_provider() -> str:
-        return os.getenv("DEFAULT_PROVIDER", "deepseek")
+        return os.getenv("DEFAULT_PROVIDER", "babeldoc-deepseek")
 
     @staticmethod
     def default_source_lang() -> str:
@@ -73,3 +74,18 @@ class Config:
         os.environ["DEFAULT_PROVIDER"] = provider
         env_path = _find_or_create_env()
         set_key(env_path, "DEFAULT_PROVIDER", provider)
+
+    @staticmethod
+    def babeldoc_python() -> str:
+        configured = os.getenv("BABELDOC_PYTHON", "").strip()
+        if configured:
+            return configured
+        venv_python = Path.cwd() / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
+        return sys.executable
+
+    @staticmethod
+    def translation_state_path(pdf_path: str | Path) -> Path:
+        pdf_path = Path(pdf_path)
+        return pdf_path.with_suffix(pdf_path.suffix + ".pages.json")

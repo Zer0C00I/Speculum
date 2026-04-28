@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
@@ -12,12 +13,14 @@ from PySide6.QtWidgets import (
 from pdftranslator.ai.anthropic import AnthropicTranslator
 from pdftranslator.ai.deepseek import DeepSeekTranslator
 from pdftranslator.ai.base import AbstractTranslator
+from pdftranslator.babeldoc_runner import uses_babeldoc
 from pdftranslator.config import Config
 from pdftranslator.gui.pdf_viewer import PDFViewer
 from pdftranslator.gui.settings_dialog import SettingsDialog
 from pdftranslator.gui.translate_worker import TranslateWorker
 from pdftranslator.logging_config import get_logger, gui_handler
 from pdftranslator.pdf.engine import PDFEngine
+from pdftranslator.translation_job import TranslationJob
 
 _log = get_logger(__name__)
 
@@ -29,13 +32,15 @@ LANGUAGE_NAMES = {
 }
 
 PROVIDER_NAMES = {
-    "deepseek": "DeepSeek",
-    "anthropic": "Anthropic Claude",
+    "babeldoc-deepseek": "BabelDOC + DeepSeek",
+    "deepseek": "DeepSeek (Legacy Overlay)",
+    "anthropic": "Anthropic Claude (Legacy Overlay)",
 }
 
 MODE_NAMES = {
-    "follow": "Follow Reader",
-    "all": "Translate All",
+    "window": "Window ±1",
+    "single": "Single Page",
+    "track": "Tracking Mode",
 }
 
 
@@ -49,11 +54,15 @@ class MainWindow(QMainWindow):
 
         self._engine_orig: PDFEngine | None = None
         self._engine_trans: PDFEngine | None = None
+        self._display_trans: PDFEngine | None = None
         self._translator: AbstractTranslator | None = None
         self._worker: TranslateWorker | None = None
         self._output_path: Path | None = None
         self._session_dir: Path | None = None
         self._last_batch_done: float = 0
+        self._translated_pages: set[int] = set()
+        self._tracking_active = False
+        self._active_job_pages: list[int] = []
 
         self._settle_timer = QTimer(self)
         self._settle_timer.setSingleShot(True)
@@ -94,6 +103,7 @@ class MainWindow(QMainWindow):
         for code, name in MODE_NAMES.items():
             self._mode.addItem(name, code)
         self._mode.setCurrentIndex(0)
+        self._mode.currentIndexChanged.connect(self._on_mode_changed)
 
         self._chk_verbose = QCheckBox("Verbose")
         self._chk_original = QCheckBox("Original")
@@ -205,6 +215,10 @@ class MainWindow(QMainWindow):
     def _on_log_toggle(self, checked: bool) -> None:
         self._log_dock.setVisible(checked)
 
+    def _on_mode_changed(self, _index: int) -> None:
+        if self._mode.currentData() != "track":
+            self._tracking_active = False
+
     def _on_page_prev(self) -> None:
         cur = self._original_viewer.current_page()
         if cur > 0: self._navigate_to(cur - 1)
@@ -239,18 +253,18 @@ class MainWindow(QMainWindow):
         self._maybe_translate_ahead(self._settle_page)
 
     def _maybe_translate_ahead(self, page_num: int) -> None:
-        if self._mode.currentData() != "follow": return
+        if self._mode.currentData() != "track": return
+        if not self._tracking_active: return
         if self._worker and self._worker.isRunning(): return
-        if not self._engine_trans or not self._translator: return
+        if not self._engine_orig: return
         import time
         if time.time() - self._last_batch_done < 1.0: return
-
-        if page_num < self._engine_trans.page_count:
+        if page_num in self._translated_pages:
             return
 
-        pages = list(range(page_num, min(page_num + 3, self._engine_orig.page_count)))
+        pages = [page_num]
         if pages:
-            _log.info("Follow-reader: auto-translating pages %s", pages)
+            _log.info("Tracking mode: auto-translating page %s", pages)
             self._start_worker(pages)
 
     # ── MAIN OPERATIONS ──
@@ -265,9 +279,11 @@ class MainWindow(QMainWindow):
             self._engine_orig = PDFEngine(file_path)
             self._output_path = Path(file_path).with_suffix(".translated.pdf")
             self._make_session_dir(Path(file_path))
+            self._tracking_active = False
 
             self._original_viewer.set_engine(self._engine_orig)
             self._connect_right_viewer()
+            self._load_translation_state()
 
             n = self._engine_orig.page_count
             self._status_bar.showMessage(f"Loaded: {n} pages | session: {self._session_dir.name}", 5000)
@@ -286,24 +302,45 @@ class MainWindow(QMainWindow):
 
     def _connect_right_viewer(self) -> None:
         self._engine_trans = None
+        self._close_display_engine()
         if self._output_path and self._output_path.exists():
             try:
                 self._engine_trans = PDFEngine(str(self._output_path))
+                self._display_trans = PDFEngine(str(self._output_path))
             except Exception as exc:
                 _log.warning("Failed to load existing translation: %s", exc)
                 self._engine_trans = None
+                self._display_trans = None
 
-        engine = self._engine_trans or self._engine_orig
+        engine = self._display_trans or self._engine_orig
         self._translated_viewer.set_engine(engine)
         self._translated_viewer.scroll_to_page(0)
 
     def _cleanup_engines(self) -> None:
-        for eng in [self._engine_orig, self._engine_trans]:
+        seen: set[int] = set()
+        for eng in [self._engine_orig, self._engine_trans, self._display_trans]:
             if eng:
+                eng_id = id(eng)
+                if eng_id in seen:
+                    continue
+                seen.add(eng_id)
                 try: eng.close()
                 except Exception as exc: _log.warning("Engine close failed: %s", exc)
         self._engine_orig = None
         self._engine_trans = None
+        self._display_trans = None
+        self._translated_pages.clear()
+        self._active_job_pages = []
+        self._tracking_active = False
+
+    def _close_display_engine(self) -> None:
+        if not self._display_trans:
+            return
+        try:
+            self._display_trans.close()
+        except Exception as exc:
+            _log.warning("Display engine close failed: %s", exc)
+        self._display_trans = None
 
     def _make_session_dir(self, src_path: Path) -> None:
         from datetime import datetime
@@ -337,6 +374,7 @@ class MainWindow(QMainWindow):
 
     def _get_provider_key(self, provider: str) -> str:
         try:
+            if provider == "babeldoc-deepseek": return Config.deepseek_api_key()
             if provider == "deepseek": return Config.deepseek_api_key()
             if provider == "anthropic": return Config.anthropic_api_key()
         except Exception as exc:
@@ -347,9 +385,6 @@ class MainWindow(QMainWindow):
         if not self._engine_orig: return
 
         provider_code = self._provider.currentData()
-        source_lang = self._source_lang.currentData()
-        target_lang = self._target_lang.currentData()
-
         if not self._get_provider_key(provider_code):
             name = PROVIDER_NAMES.get(provider_code, provider_code)
             if QMessageBox.question(self, "API Key Missing", f"No key for {name}. Open Settings?") == QMessageBox.StandardButton.Yes:
@@ -357,38 +392,31 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            if provider_code == "deepseek": self._translator = DeepSeekTranslator()
-            elif provider_code == "anthropic": self._translator = AnthropicTranslator()
-            else: raise ValueError(f"Unknown provider: {provider_code}")
+            self._translator = self._build_translator(provider_code)
+            self._ensure_output_engine(provider_code)
         except Exception as exc:
-            QMessageBox.critical(self, "Error", str(exc))
+            if uses_babeldoc(provider_code):
+                QMessageBox.critical(self, "Error", str(exc))
+            else:
+                _log.exception("Failed to create translation backend")
+                QMessageBox.critical(self, "Error", f"Failed to create output document:\n{exc}")
             return
 
-        try:
-            self._ensure_output_engine()
-        except Exception as exc:
-            _log.exception("Failed to create output engine")
-            QMessageBox.critical(self, "Error", f"Failed to create output document:\n{exc}")
-            return
-
-        mode = self._mode.currentData()
-        already_done = self._engine_trans.page_count
-        if mode == "follow":
-            current = self._original_viewer.current_page()
-            start = max(already_done, current)
-            pages = list(range(start, min(start + 3, self._engine_orig.page_count)))
-        else:
-            pages = list(range(already_done, self._engine_orig.page_count))
+        pages = self._determine_pages(provider_code)
+        self._tracking_active = self._mode.currentData() == "track"
 
         if not pages:
-            self._status_bar.showMessage("All pages already translated", 3000)
+            if self._tracking_active:
+                self._status_bar.showMessage("Tracking mode armed. Open a page that is not translated yet.", 4000)
+            else:
+                self._status_bar.showMessage("All selected pages are already translated", 3000)
             self._btn_translate.setEnabled(True)
             self._btn_load.setEnabled(True)
             return
 
         self._start_worker(pages)
 
-    def _ensure_output_engine(self) -> None:
+    def _ensure_output_engine(self, provider_code: str) -> None:
         if self._engine_trans and self._engine_trans.page_count > 0:
             _log.info("Reusing output engine: %d pages", self._engine_trans.page_count)
             return
@@ -397,35 +425,78 @@ class MainWindow(QMainWindow):
             try: self._engine_trans.close()
             except Exception as exc: _log.warning("Output engine close failed: %s", exc)
 
+        if uses_babeldoc(provider_code):
+            if not self._engine_orig or not self._output_path:
+                raise RuntimeError("Missing source PDF for BabelDOC output initialization")
+            import shutil
+            shutil.copy2(self._engine_orig._path, self._output_path)
+            self._engine_trans = PDFEngine(str(self._output_path))
+            self._save_translation_state()
+            _log.info("Initialized BabelDOC output from source PDF")
+            return
+
         import fitz
         self._engine_trans = PDFEngine(doc=fitz.open())
         _log.info("Created new output document")
 
+    def _build_translator(self, provider_code: str) -> AbstractTranslator | None:
+        if provider_code == "deepseek":
+            return DeepSeekTranslator()
+        if provider_code == "anthropic":
+            return AnthropicTranslator()
+        if uses_babeldoc(provider_code):
+            return None
+        raise ValueError(f"Unknown provider: {provider_code}")
+
+    def _determine_pages(self, provider_code: str) -> list[int]:
+        if not self._engine_orig:
+            return []
+        current = self._original_viewer.current_page()
+        mode = self._mode.currentData()
+        if mode == "single":
+            candidates = [current]
+        elif mode == "window":
+            candidates = [p for p in [current - 1, current, current + 1] if 0 <= p < self._engine_orig.page_count]
+        else:
+            candidates = [current]
+        return [page for page in candidates if page not in self._translated_pages]
+
     def _start_worker(self, pages: list[int]) -> None:
-        if not all([self._engine_orig, self._engine_trans, self._translator]):
-            _log.error("Cannot start worker: missing engines or translator")
+        if not self._engine_orig:
+            _log.error("Cannot start worker: missing source engine")
             return
 
         self._settle_timer.stop()
 
+        provider_code = self._provider.currentData()
+        use_babeldoc = uses_babeldoc(provider_code)
+        self._active_job_pages = list(pages)
         self._btn_translate.setEnabled(False)
         self._btn_load.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._progress_bar.setVisible(True)
         self._progress_bar.setMaximum(len(pages))
         self._progress_bar.setValue(0)
-        self._status_bar.showMessage(f"Translating {len(pages)} pages...")
+        self._status_bar.showMessage(
+            f"Translating {len(pages)} page(s): {self._page_label_text(pages)}"
+        )
 
-        # Worker gets its own source engine to avoid fitz thread-safety issues
         worker_src = PDFEngine(self._engine_orig._path) if self._engine_orig._path else self._engine_orig
-        self._worker = TranslateWorker(
-            worker_src, self._engine_trans,
-            self._translator,
-            self._source_lang.currentData(), self._target_lang.currentData(),
-            self._provider.currentData(), pages,
+        job = TranslationJob(
+            provider=provider_code,
+            source_lang=self._source_lang.currentData(),
+            target_lang=self._target_lang.currentData(),
+            page_numbers=pages,
             output_path=str(self._output_path),
             session_dir=str(self._session_dir) if self._session_dir else None,
             verbose=self._chk_verbose.isChecked(),
+            page_window_label=self._page_label_text(pages),
+        )
+        self._worker = TranslateWorker(
+            worker_src,
+            self._engine_trans,
+            self._translator,
+            job,
         )
         self._worker.page_progress.connect(self._on_page_done)
         self._worker.translation_finished.connect(self._on_translation_done)
@@ -436,20 +507,10 @@ class MainWindow(QMainWindow):
         self._progress_bar.setValue(done)
         n = self._engine_orig.page_count if self._engine_orig else total
         self._page_total_label.setText(f"/ {n}  [{done}/{total}]")
+        self._mark_pages_translated([page_num])
 
-        # Worker already saved to disk — reload a fresh engine for display only
-        if self._output_path and self._output_path.exists():
-            try:
-                display_engine = PDFEngine(str(self._output_path))
-                saved = self._original_viewer.verticalScrollBar().value()
-                tv = self._translated_viewer
-                tv.verticalScrollBar().blockSignals(True)
-                tv.set_engine(display_engine)
-                tv.verticalScrollBar().setValue(saved)
-                tv.verticalScrollBar().blockSignals(False)
-                self._status_bar.showMessage(f"Built page {page_num + 1}", 2000)
-            except Exception as exc:
-                _log.warning("Display reload failed: %s", exc)
+        self._reload_translated_output(refresh_output_engine=uses_babeldoc(self._provider.currentData()))
+        self._status_bar.showMessage(f"Built page {page_num + 1}", 2000)
 
     def _on_translation_done(self) -> None:
         _log.info("Translation batch complete")
@@ -460,10 +521,37 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         import time
         self._last_batch_done = time.time()
-        if self._engine_trans and self._engine_trans.page_count > 0:
-            self._status_bar.showMessage("Done — scroll to translate more, or Save As...", 0)
+        self._reload_translated_output(refresh_output_engine=uses_babeldoc(self._provider.currentData()))
+        self._save_translation_state()
+        if self._tracking_active:
+            self._status_bar.showMessage("Tracking mode active — open another page to translate it.", 0)
+        elif self._engine_trans and self._engine_trans.page_count > 0:
+            self._status_bar.showMessage("Done — scroll, translate more, or Save As...", 0)
         else:
             self._status_bar.showMessage("Done", 0)
+        self._active_job_pages = []
+
+    def _reload_translated_output(self, refresh_output_engine: bool = False) -> None:
+        if not self._output_path or not self._output_path.exists():
+            return
+        try:
+            if refresh_output_engine and self._engine_trans:
+                try:
+                    self._engine_trans.close()
+                except Exception as exc:
+                    _log.warning("Output engine close failed: %s", exc)
+            if refresh_output_engine:
+                self._engine_trans = PDFEngine(str(self._output_path))
+            self._close_display_engine()
+            self._display_trans = PDFEngine(str(self._output_path))
+            saved = self._original_viewer.verticalScrollBar().value()
+            tv = self._translated_viewer
+            tv.verticalScrollBar().blockSignals(True)
+            tv.set_engine(self._display_trans)
+            tv.verticalScrollBar().setValue(saved)
+            tv.verticalScrollBar().blockSignals(False)
+        except Exception as exc:
+            _log.warning("Display reload failed: %s", exc)
 
     def _on_translation_error(self, error: str) -> None:
         _log.error("Translation error: %s", error)
@@ -471,13 +559,18 @@ class MainWindow(QMainWindow):
         self._btn_load.setEnabled(True)
         self._btn_stop.setEnabled(False)
         self._progress_bar.setVisible(False)
+        self._tracking_active = False
+        self._active_job_pages = []
         self._status_bar.showMessage(f"Error: {error}", 10000)
         QMessageBox.critical(self, "Translation Error", error)
 
     def _on_stop(self) -> None:
+        self._tracking_active = False
         if self._worker and self._worker.isRunning():
             self._worker.cancel()
             self._status_bar.showMessage("Stopping...", 3000)
+        else:
+            self._status_bar.showMessage("Stopped", 2000)
 
     def _on_save(self) -> None:
         engine = self._engine_trans or self._engine_orig
@@ -511,6 +604,40 @@ class MainWindow(QMainWindow):
             if self._worker.isRunning():
                 self._worker.wait(5000)
             self._worker = None
+        self._save_translation_state()
         self._save_session_log()
         self._cleanup_engines()
         super().closeEvent(event)
+
+    def _page_label_text(self, pages: list[int]) -> str:
+        return ", ".join(str(page + 1) for page in pages)
+
+    def _mark_pages_translated(self, pages: list[int]) -> None:
+        self._translated_pages.update(page for page in pages if page >= 0)
+
+    def _load_translation_state(self) -> None:
+        self._translated_pages.clear()
+        if not self._engine_orig or not self._output_path:
+            return
+        state_path = Config.translation_state_path(self._output_path)
+        if state_path.exists():
+            try:
+                data = json.loads(state_path.read_text())
+                pages = data.get("translated_pages", [])
+                self._translated_pages = {int(page) for page in pages if 0 <= int(page) < self._engine_orig.page_count}
+                return
+            except Exception as exc:
+                _log.warning("Failed to load translation state: %s", exc)
+        if self._output_path.exists():
+            self._translated_pages = set(range(self._engine_orig.page_count))
+
+    def _save_translation_state(self) -> None:
+        if not self._output_path:
+            return
+        state_path = Config.translation_state_path(self._output_path)
+        try:
+            state_path.write_text(json.dumps({
+                "translated_pages": sorted(self._translated_pages),
+            }, indent=2))
+        except Exception as exc:
+            _log.warning("Failed to save translation state: %s", exc)
