@@ -4,7 +4,7 @@ from PyInstaller.utils.hooks import collect_all
 from PyInstaller.utils.hooks import copy_metadata
 
 
-project_root = Path(__file__).resolve().parents[2]
+project_root = Path.cwd().resolve()
 
 
 def merge_collect(package_name: str, datas: list, binaries: list, hiddenimports: list) -> None:
