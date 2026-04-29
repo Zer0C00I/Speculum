@@ -20,7 +20,7 @@ cp "${ROOT_DIR}/packaging/linux/AppRun" "${APPDIR}/AppRun"
 chmod +x "${APPDIR}/AppRun"
 cp "${ROOT_DIR}/packaging/linux/speculum.desktop" "${APPDIR}/speculum.desktop"
 cp "${ROOT_DIR}/packaging/linux/speculum.svg" "${APPDIR}/speculum.svg"
-cp "${ROOT_DIR}/packaging/linux/speculum.appdata.xml" "${APPDIR}/usr/share/metainfo/speculum.appdata.xml"
+cp "${ROOT_DIR}/packaging/linux/io.github.Zer0C00I.Speculum.metainfo.xml" "${APPDIR}/usr/share/metainfo/io.github.Zer0C00I.Speculum.metainfo.xml"
 cp "${ROOT_DIR}/packaging/linux/speculum.desktop" "${APPDIR}/usr/share/applications/speculum.desktop"
 cp "${ROOT_DIR}/packaging/linux/speculum.svg" "${APPDIR}/usr/share/icons/hicolor/scalable/apps/speculum.svg"
 

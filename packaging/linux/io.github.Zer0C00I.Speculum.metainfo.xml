@@ -5,9 +5,7 @@
   <summary>Side-by-side PDF translation reader</summary>
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
-  <developer id="io.github.Zer0C00I">
-    <name>Zer0C00I</name>
-  </developer>
+  <developer_name>Zer0C00I</developer_name>
   <description>
     <p>
       Speculum is a desktop PDF reader focused on side-by-side translation,
