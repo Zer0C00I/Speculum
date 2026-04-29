@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Speculum
+Comment=Side-by-side PDF translation reader
+Exec=speculum
+Icon=speculum
+Categories=Office;Viewer;
+Terminal=false
+StartupNotify=true

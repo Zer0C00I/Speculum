@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+APPDIR="$HERE"
+
+export APPDIR
+export XDG_DATA_DIRS="${APPDIR}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+export QT_PLUGIN_PATH="${APPDIR}/usr/lib/speculum/PySide6/Qt/plugins:${QT_PLUGIN_PATH:-}"
+export QML2_IMPORT_PATH="${APPDIR}/usr/lib/speculum/PySide6/Qt/qml:${QML2_IMPORT_PATH:-}"
+export LD_LIBRARY_PATH="${APPDIR}/usr/lib/speculum:${LD_LIBRARY_PATH:-}"
+
+exec "${APPDIR}/usr/bin/speculum" "$@"
