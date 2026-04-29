@@ -21,6 +21,7 @@ _log = get_logger(__name__)
 
 class TranslateWorker(QThread):
     page_progress = Signal(int, int, int)
+    backend_progress = Signal(int, str)
     translation_finished = Signal()
     error_occurred = Signal(str)
 
@@ -40,7 +41,12 @@ class TranslateWorker(QThread):
         self._cancelled = False
 
     def run(self) -> None:
-        _log.info("TranslateWorker: starting provider=%s", self._job.provider)
+        _log.info(
+            "TranslateWorker: starting provider=%s pages=%s output=%s",
+            self._job.provider,
+            [page + 1 for page in self._job.page_numbers],
+            self._job.output_path,
+        )
         try:
             if uses_babeldoc(self._job.provider):
                 self._run_babeldoc()
@@ -69,6 +75,13 @@ class TranslateWorker(QThread):
 
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         tmp.close()
+        _log.info(
+            "TranslateWorker: BabelDOC request source=%s temp_output=%s pages=%s provider=%s",
+            self._src._path,
+            tmp.name,
+            [page + 1 for page in self._job.page_numbers],
+            self._job.babeldoc_provider.code,
+        )
         request = BabelDocRequest(
             input_path=self._src._path,
             output_path=tmp.name,
@@ -84,9 +97,15 @@ class TranslateWorker(QThread):
                 request,
                 log=_log.info,
                 is_cancelled=lambda: self._cancelled,
+                progress=self._emit_backend_progress,
             )
+            _log.info("TranslateWorker: BabelDOC produced temp result %s", result_path)
             translated_doc = fitz.open(str(result_path))
             try:
+                _log.info(
+                    "TranslateWorker: merging translated pages into destination: %s",
+                    [page + 1 for page in self._job.page_numbers],
+                )
                 self._dst.replace_pages_from_document(translated_doc, self._job.page_numbers)
             finally:
                 translated_doc.close()
@@ -130,14 +149,18 @@ class TranslateWorker(QThread):
         try:
             tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
             tmp.close()
+            _log.info("TranslateWorker: saving merged output to temp file %s", tmp.name)
             self._dst._doc.save(tmp.name, garbage=4, deflate=True)
             shutil.move(tmp.name, self._job.output_path)
             if self._job.session_dir:
                 shutil.copy2(self._job.output_path, str(Path(self._job.session_dir) / Path(self._job.output_path).name))
-            _log.debug("TranslateWorker: saved to %s", self._job.output_path)
+            _log.info("TranslateWorker: saved output to %s", self._job.output_path)
         except Exception as exc:
             _log.warning("TranslateWorker: save failed: %s", exc)
 
     def cancel(self) -> None:
         _log.info("TranslateWorker: cancel requested")
         self._cancelled = True
+
+    def _emit_backend_progress(self, percent: int, message: str) -> None:
+        self.backend_progress.emit(max(0, min(100, percent)), message)

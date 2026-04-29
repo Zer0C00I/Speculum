@@ -7,12 +7,39 @@ from dotenv import load_dotenv, set_key
 _ENV_PATH: Path | None = None
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _xdg_dir(env_name: str, fallback: str) -> Path:
+    base = os.getenv(env_name, "").strip()
+    if base:
+        return Path(base)
+    return Path.home() / fallback
+
+
+def _app_config_dir() -> Path:
+    return _xdg_dir("XDG_CONFIG_HOME", ".config") / "pdftranslator"
+
+
+def _app_state_dir() -> Path:
+    return _xdg_dir("XDG_STATE_HOME", ".local/state") / "pdftranslator"
+
+
+def _app_cache_dir() -> Path:
+    return _xdg_dir("XDG_CACHE_HOME", ".cache") / "pdftranslator"
+
+
 def _find_or_create_env() -> Path:
     global _ENV_PATH
     if _ENV_PATH is not None and _ENV_PATH.exists():
         return _ENV_PATH
 
     candidates = [
+        _app_config_dir() / "config.env",
         Path.cwd() / ".env",
         Path(__file__).resolve().parents[1] / ".env",
     ]
@@ -21,7 +48,8 @@ def _find_or_create_env() -> Path:
             _ENV_PATH = c
             return c
 
-    _ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+    _ENV_PATH = _app_config_dir() / "config.env"
+    _ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
     _ENV_PATH.touch()
     return _ENV_PATH
 
@@ -37,6 +65,24 @@ def _reload_env() -> None:
 
 
 class Config:
+    @staticmethod
+    def app_config_dir() -> Path:
+        path = _app_config_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def app_state_dir() -> Path:
+        path = _app_state_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def app_cache_dir() -> Path:
+        path = _app_cache_dir()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @staticmethod
     def deepseek_api_key() -> str:
         return os.getenv("DEEPSEEK_API_KEY", "")
@@ -68,6 +114,18 @@ class Config:
     @staticmethod
     def default_target_lang() -> str:
         return os.getenv("DEFAULT_TARGET_LANG", "ru")
+
+    @staticmethod
+    def verbose_logging() -> bool:
+        return _env_bool("VERBOSE_LOGGING", False)
+
+    @staticmethod
+    def save_logs_to_file() -> bool:
+        return _env_bool("SAVE_LOGS_TO_FILE", False)
+
+    @staticmethod
+    def save_session_copies() -> bool:
+        return _env_bool("SAVE_SESSION_COPIES", False)
 
     @staticmethod
     def set_deepseek_api_key(key: str) -> None:
@@ -104,6 +162,24 @@ class Config:
         os.environ["DEFAULT_PROVIDER"] = provider
         env_path = _find_or_create_env()
         set_key(env_path, "DEFAULT_PROVIDER", provider)
+
+    @staticmethod
+    def set_verbose_logging(enabled: bool) -> None:
+        os.environ["VERBOSE_LOGGING"] = "1" if enabled else "0"
+        env_path = _find_or_create_env()
+        set_key(env_path, "VERBOSE_LOGGING", os.environ["VERBOSE_LOGGING"])
+
+    @staticmethod
+    def set_save_logs_to_file(enabled: bool) -> None:
+        os.environ["SAVE_LOGS_TO_FILE"] = "1" if enabled else "0"
+        env_path = _find_or_create_env()
+        set_key(env_path, "SAVE_LOGS_TO_FILE", os.environ["SAVE_LOGS_TO_FILE"])
+
+    @staticmethod
+    def set_save_session_copies(enabled: bool) -> None:
+        os.environ["SAVE_SESSION_COPIES"] = "1" if enabled else "0"
+        env_path = _find_or_create_env()
+        set_key(env_path, "SAVE_SESSION_COPIES", os.environ["SAVE_SESSION_COPIES"])
 
     @staticmethod
     def babeldoc_python() -> str:

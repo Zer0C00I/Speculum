@@ -56,6 +56,7 @@ def run_babeldoc(
     request: BabelDocRequest,
     log: Callable[[str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, str], None] | None = None,
 ) -> Path:
     api_key = request.provider.api_key.strip()
     if not api_key:
@@ -82,6 +83,16 @@ def run_babeldoc(
         if log:
             log(f"[BabelDOC] {message}")
 
+    log_line(
+        "Preparing request: "
+        f"provider={request.provider.code} model={request.provider.model} "
+        f"source_lang={request.source_lang} target_lang={request.target_lang} "
+        f"pages={_page_numbers_to_ranges(request.page_numbers)}"
+    )
+    log_line(f"Bundle dir: {bundle_dir}")
+    log_line(f"Working root: {working_root}")
+    log_line(f"Output dir: {output_dir}")
+
     poller = threading.Thread(
         target=_poll_cancel,
         args=(is_cancelled, requested_cancel, pm_cancel_event, stop_polling),
@@ -90,7 +101,9 @@ def run_babeldoc(
     poller.start()
 
     try:
+        log_line("Importing BabelDOC modules")
         modules = _load_babeldoc(bundle_dir)
+        log_line("Creating OpenAI-compatible translator")
         translator = modules["OpenAITranslator"](
             lang_in=request.source_lang,
             lang_out=request.target_lang,
@@ -103,7 +116,11 @@ def run_babeldoc(
         )
         output_dir.mkdir(parents=True, exist_ok=True)
         working_root.mkdir(parents=True, exist_ok=True)
+        log_line("Created temp output and working directories")
 
+        log_line("Loading document layout model")
+        doc_layout_model = _get_doc_layout_model(modules, log_line)
+        log_line("Building TranslationConfig")
         config = modules["TranslationConfig"](
             input_file=request.input_path,
             font=None,
@@ -111,13 +128,14 @@ def run_babeldoc(
             output_dir=output_dir,
             translator=translator,
             term_extraction_translator=translator,
-            debug=request.verbose,
+            # App-level "Verbose" should only affect logs, not generate debug-marked PDFs.
+            debug=False,
             lang_in=request.source_lang,
             lang_out=request.target_lang,
             no_dual=True,
             no_mono=False,
             qps=5,
-            doc_layout_model=_get_doc_layout_model(modules),
+            doc_layout_model=doc_layout_model,
             report_interval=0.5,
             min_text_length=5,
             watermark_output_mode=modules["WatermarkOutputMode"].NoWatermark,
@@ -128,11 +146,15 @@ def run_babeldoc(
 
         init_font_mapper = getattr(config.doc_layout_model, "init_font_mapper", None)
         if callable(init_font_mapper):
+            log_line("Initializing font mapper")
             init_font_mapper(config)
+        else:
+            log_line("Font mapper init not provided by model")
 
+        log_line("Creating ProgressMonitor")
         pm = modules["ProgressMonitor"](
             modules["get_translation_stage"](config),
-            progress_change_callback=_make_progress_callback(log_line),
+            progress_change_callback=_make_progress_callback(log_line, progress),
             finish_callback=lambda **_kwargs: None,
             cancel_event=pm_cancel_event,
             report_interval=config.report_interval,
@@ -143,9 +165,12 @@ def run_babeldoc(
         if requested_cancel.is_set():
             raise BabelDocError("Translation cancelled")
 
+        log_line("Translation finished, selecting output PDF")
         result_path = _pick_result_pdf(result)
+        log_line(f"Selected output PDF: {result_path}")
         Path(request.output_path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(result_path, request.output_path)
+        log_line(f"Copied result to requested output path: {request.output_path}")
         return Path(request.output_path)
     except Exception as exc:
         if requested_cancel.is_set():
@@ -159,6 +184,7 @@ def run_babeldoc(
     finally:
         stop_polling.set()
         poller.join(timeout=1.0)
+        log_line("Cleaning temporary BabelDOC directories")
         with suppress(Exception):
             shutil.rmtree(output_dir)
         with suppress(Exception):
@@ -220,32 +246,56 @@ def _load_babeldoc(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
-def _get_doc_layout_model(modules: dict[str, Any]):
+def _get_doc_layout_model(
+    modules: dict[str, Any],
+    log: Callable[[str], None] | None = None,
+):
     global _DOC_LAYOUT_MODEL
     with _BABELDOC_LOCK:
         if _DOC_LAYOUT_MODEL is None:
+            if log:
+                log("DocLayoutModel cache miss, loading ONNX model")
             _DOC_LAYOUT_MODEL = modules["DocLayoutModel"].load_onnx()
+            if log:
+                log("DocLayoutModel loaded and cached")
+        elif log:
+            log("DocLayoutModel cache hit")
         return _DOC_LAYOUT_MODEL
 
 
 def _make_progress_callback(
     log: Callable[[str], None],
+    progress: Callable[[int, str], None] | None = None,
 ) -> Callable[..., None]:
     logger = logging.getLogger(__name__)
 
     def callback(**event: Any) -> None:
         event_type = event.get("type")
         if event_type == "progress_start":
+            if progress:
+                progress(
+                    int(event.get("overall_progress", 0)),
+                    f"{event['stage']} started",
+                )
             log(
                 f"{event['stage']} started ({event['part_index']}/{event['total_parts']})"
             )
         elif event_type == "progress_update":
-            if int(time.time() * 10) % 5 == 0:
-                log(
-                    f"{event['stage']}: {event['stage_current']}/{event['stage_total']} "
-                    f"overall={event['overall_progress']:.1f}%"
+            if progress:
+                progress(
+                    int(event.get("overall_progress", 0)),
+                    f"{event['stage']}: {event['stage_current']}/{event['stage_total']}",
                 )
+            log(
+                f"{event['stage']}: {event['stage_current']}/{event['stage_total']} "
+                f"overall={event['overall_progress']:.1f}%"
+            )
         elif event_type == "progress_end":
+            if progress:
+                progress(
+                    int(event.get("overall_progress", 0)),
+                    f"{event['stage']} complete",
+                )
             log(f"{event['stage']} complete")
         elif event_type == "error":
             logger.error("BabelDOC progress error: %s", event.get("error"))
@@ -263,7 +313,7 @@ def _pick_result_pdf(result: Any) -> Path:
     for candidate in candidates:
         if candidate:
             return Path(candidate)
-        raise BabelDocError("BabelDOC did not produce an output PDF")
+    raise BabelDocError("BabelDOC did not produce an output PDF")
 
 
 def babeldoc_provider_config(provider: str) -> BabelDocProviderConfig:

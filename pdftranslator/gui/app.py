@@ -10,8 +10,8 @@ from pdftranslator.gui.main_window import MainWindow
 
 
 def run_gui() -> None:
-    setup_logging()
     load_config()
+    setup_logging()
 
     app = QApplication(sys.argv)
     app.setApplicationName("PDF Translator")

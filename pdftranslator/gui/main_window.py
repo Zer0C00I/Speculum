@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
     QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
@@ -18,7 +19,12 @@ from pdftranslator.config import Config
 from pdftranslator.gui.pdf_viewer import PDFViewer
 from pdftranslator.gui.settings_dialog import SettingsDialog
 from pdftranslator.gui.translate_worker import TranslateWorker
-from pdftranslator.logging_config import get_logger, gui_handler
+from pdftranslator.logging_config import (
+    get_logger,
+    gui_handler,
+    set_file_logging_enabled,
+    set_verbose_logging,
+)
 from pdftranslator.pdf.engine import PDFEngine
 from pdftranslator.translation_job import TranslationJob
 
@@ -46,6 +52,8 @@ MODE_NAMES = {
 
 
 class MainWindow(QMainWindow):
+    BASE_DPI = 150.0
+
     def __init__(self) -> None:
         super().__init__()
         _log.info("=== Starting PDF Translator GUI ===")
@@ -72,9 +80,12 @@ class MainWindow(QMainWindow):
         self._settle_page: int = 0
 
         self._setup_toolbar()
+        self._setup_menu_bar()
         self._setup_panels()
         self._setup_statusbar()
         self._setup_log_dock()
+        self._setup_shortcuts()
+        self._apply_logging_preferences()
 
         _log.info("GUI initialized")
 
@@ -106,7 +117,6 @@ class MainWindow(QMainWindow):
         self._mode.setCurrentIndex(0)
         self._mode.currentIndexChanged.connect(self._on_mode_changed)
 
-        self._chk_verbose = QCheckBox("Verbose")
         self._chk_original = QCheckBox("Original")
         self._chk_original.setChecked(True)
         self._chk_translated = QCheckBox("Translated")
@@ -124,13 +134,6 @@ class MainWindow(QMainWindow):
         self._btn_save.setEnabled(False)
         self._btn_save.clicked.connect(self._on_save)
 
-        self._btn_settings = QPushButton("Settings")
-        self._btn_settings.clicked.connect(self._on_settings)
-
-        self._btn_log = QPushButton("Log")
-        self._btn_log.setCheckable(True)
-        self._btn_log.toggled.connect(self._on_log_toggle)
-
         toolbar.addWidget(self._btn_load)
         toolbar.addWidget(QLabel("  From:"))
         toolbar.addWidget(self._source_lang)
@@ -145,9 +148,6 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._btn_stop)
         toolbar.addWidget(self._btn_save)
         toolbar.addStretch()
-        toolbar.addWidget(self._chk_verbose)
-        toolbar.addWidget(self._btn_log)
-        toolbar.addWidget(self._btn_settings)
         toolbar.addSpacing(8)
         toolbar.addWidget(self._chk_original)
         toolbar.addWidget(self._chk_translated)
@@ -171,11 +171,47 @@ class MainWindow(QMainWindow):
         self._original_viewer = PDFViewer()
         self._translated_viewer = PDFViewer()
         self._original_viewer.sync_with(self._translated_viewer)
+        self._original_viewer.zoom_requested.connect(self._on_zoom_requested)
+        self._translated_viewer.zoom_requested.connect(self._on_zoom_requested)
         self._splitter.addWidget(self._original_viewer)
         self._splitter.addWidget(self._translated_viewer)
         self._splitter.setSizes([600, 600])
         self._chk_original.toggled.connect(self._original_viewer.setVisible)
         self._chk_translated.toggled.connect(self._translated_viewer.setVisible)
+
+    def _setup_menu_bar(self) -> None:
+        menubar = self.menuBar()
+
+        file_menu = menubar.addMenu("File")
+        file_menu.addAction("Load PDF", self._on_load, QKeySequence.StandardKey.Open)
+        file_menu.addAction("Save As...", self._on_save, QKeySequence.StandardKey.SaveAs)
+        file_menu.addSeparator()
+        file_menu.addAction("Exit", self.close, QKeySequence.StandardKey.Quit)
+
+        view_menu = menubar.addMenu("View")
+        self._act_show_log = QAction("Show Log", self, checkable=True)
+        self._act_show_log.setChecked(False)
+        self._act_show_log.toggled.connect(self._on_log_toggle)
+        view_menu.addAction(self._act_show_log)
+
+        options_menu = menubar.addMenu("Options")
+        options_menu.addAction("API Keys...", self._on_settings)
+        options_menu.addSeparator()
+
+        self._act_verbose = QAction("Verbose Logging", self, checkable=True)
+        self._act_verbose.setChecked(Config.verbose_logging())
+        self._act_verbose.toggled.connect(self._on_verbose_toggled)
+        options_menu.addAction(self._act_verbose)
+
+        self._act_save_logs = QAction("Save Logs To File", self, checkable=True)
+        self._act_save_logs.setChecked(Config.save_logs_to_file())
+        self._act_save_logs.toggled.connect(self._on_save_logs_toggled)
+        options_menu.addAction(self._act_save_logs)
+
+        self._act_save_session = QAction("Save Session Copies", self, checkable=True)
+        self._act_save_session.setChecked(Config.save_session_copies())
+        self._act_save_session.toggled.connect(self._on_save_session_toggled)
+        options_menu.addAction(self._act_save_session)
 
     def _setup_statusbar(self) -> None:
         self._status_bar = QStatusBar()
@@ -188,15 +224,36 @@ class MainWindow(QMainWindow):
         self._page_spin.setValue(1); self._page_spin.setFixedWidth(60)
         self._page_spin.valueChanged.connect(self._on_page_spin)
         self._page_total_label = QLabel("/ —"); self._page_label = QLabel("Page:")
+        self._btn_zoom_out = QPushButton("-"); self._btn_zoom_out.setFixedWidth(28)
+        self._btn_zoom_out.clicked.connect(self._on_zoom_out)
+        self._btn_zoom_in = QPushButton("+"); self._btn_zoom_in.setFixedWidth(28)
+        self._btn_zoom_in.clicked.connect(self._on_zoom_in)
+        self._btn_fit = QPushButton("Fit")
+        self._btn_fit.setFixedWidth(42)
+        self._btn_fit.clicked.connect(self._on_fit_width)
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setMinimumWidth(48)
         self._progress_bar = QProgressBar(); self._progress_bar.setMaximumWidth(250)
         self._progress_bar.setVisible(False)
+        self._task_label = QLabel("")
+        self._task_label.setMinimumWidth(200)
+        self._progress_label = QLabel("")
+        self._progress_label.setMinimumWidth(320)
         self._status_bar.addWidget(self._page_label)
         self._status_bar.addWidget(self._btn_prev)
         self._status_bar.addWidget(self._page_spin)
         self._status_bar.addWidget(self._page_total_label)
         self._status_bar.addWidget(self._btn_next)
+        self._status_bar.addWidget(QLabel("Zoom:"))
+        self._status_bar.addWidget(self._btn_zoom_out)
+        self._status_bar.addWidget(self._zoom_label)
+        self._status_bar.addWidget(self._btn_zoom_in)
+        self._status_bar.addWidget(self._btn_fit)
+        self._status_bar.addPermanentWidget(self._task_label)
+        self._status_bar.addPermanentWidget(self._progress_label)
         self._status_bar.addPermanentWidget(self._progress_bar)
         self._original_viewer.page_changed.connect(self._on_viewer_page_changed)
+        self._update_zoom_label()
 
     def _setup_log_dock(self) -> None:
         self._log_widget = QTextEdit(); self._log_widget.setReadOnly(True)
@@ -209,14 +266,47 @@ class MainWindow(QMainWindow):
             handler.log_signal.connect(self._on_log_line)
             _log.info("Log dock connected")
 
+    def _setup_shortcuts(self) -> None:
+        QShortcut(QKeySequence.ZoomIn, self, activated=self._on_zoom_in)
+        QShortcut(QKeySequence.ZoomOut, self, activated=self._on_zoom_out)
+        QShortcut(QKeySequence("Ctrl+0"), self, activated=self._on_fit_width)
+        QShortcut(QKeySequence("Ctrl+Shift+0"), self, activated=self._on_fit_width)
+
     def _on_log_line(self, line: str) -> None:
         self._log_widget.append(line)
         sb = self._log_widget.verticalScrollBar(); sb.setValue(sb.maximum())
 
     def _on_log_toggle(self, checked: bool) -> None:
         self._log_dock.setVisible(checked)
+        if hasattr(self, "_act_show_log"):
+            self._act_show_log.blockSignals(True)
+            self._act_show_log.setChecked(checked)
+            self._act_show_log.blockSignals(False)
+
+    def _on_verbose_toggled(self, checked: bool) -> None:
+        Config.set_verbose_logging(checked)
+        set_verbose_logging(checked)
+        _log.info("Verbose logging %s", "enabled" if checked else "disabled")
+        if hasattr(self, "_act_verbose"):
+            self._act_verbose.blockSignals(True)
+            self._act_verbose.setChecked(checked)
+            self._act_verbose.blockSignals(False)
+
+    def _on_save_logs_toggled(self, checked: bool) -> None:
+        Config.set_save_logs_to_file(checked)
+        set_file_logging_enabled(checked)
+        _log.info("File logging %s", "enabled" if checked else "disabled")
+
+    def _on_save_session_toggled(self, checked: bool) -> None:
+        Config.set_save_session_copies(checked)
+        _log.info("Session copies %s", "enabled" if checked else "disabled")
+
+    def _apply_logging_preferences(self) -> None:
+        set_verbose_logging(Config.verbose_logging())
+        set_file_logging_enabled(Config.save_logs_to_file())
 
     def _on_mode_changed(self, _index: int) -> None:
+        _log.info("Mode changed to %s", self._mode.currentData())
         if self._mode.currentData() != "track":
             self._tracking_active = False
 
@@ -253,6 +343,53 @@ class MainWindow(QMainWindow):
     def _on_settle(self) -> None:
         self._maybe_translate_ahead(self._settle_page)
 
+    def _on_zoom_requested(
+        self,
+        factor: float,
+        page_num: int,
+        rel_y: float,
+        rel_x: float,
+    ) -> None:
+        anchor = (page_num, rel_y, rel_x)
+        dpi = self._original_viewer.dpi() * factor
+        self._original_viewer.set_dpi_with_anchor(dpi, anchor)
+        self._translated_viewer.set_dpi_with_anchor(dpi, anchor)
+        self._update_zoom_label()
+
+    def _set_zoom(self, dpi: float) -> None:
+        self._original_viewer.set_dpi(dpi)
+        self._translated_viewer.set_dpi(dpi)
+        self._update_zoom_label()
+
+    def _update_zoom_label(self) -> None:
+        percent = round(self._original_viewer.dpi() / self.BASE_DPI * 100)
+        self._zoom_label.setText(f"{percent}%")
+
+    def _on_zoom_in(self) -> None:
+        self._set_zoom(self._original_viewer.dpi() * 1.15)
+
+    def _on_zoom_out(self) -> None:
+        self._set_zoom(self._original_viewer.dpi() / 1.15)
+
+    def _on_fit_width(self) -> None:
+        target = self._primary_visible_viewer()
+        if target is None:
+            return
+        target.fit_width()
+        dpi = target.dpi()
+        if self._original_viewer.isVisible():
+            self._original_viewer.set_dpi(dpi)
+        if self._translated_viewer.isVisible():
+            self._translated_viewer.set_dpi(dpi)
+        self._update_zoom_label()
+
+    def _primary_visible_viewer(self) -> PDFViewer | None:
+        if self._original_viewer.isVisible():
+            return self._original_viewer
+        if self._translated_viewer.isVisible():
+            return self._translated_viewer
+        return None
+
     def _maybe_translate_ahead(self, page_num: int) -> None:
         if self._mode.currentData() != "track": return
         if not self._tracking_active: return
@@ -287,7 +424,9 @@ class MainWindow(QMainWindow):
             self._load_translation_state()
 
             n = self._engine_orig.page_count
-            self._status_bar.showMessage(f"Loaded: {n} pages | session: {self._session_dir.name}", 5000)
+            self._task_label.setText("")
+            self._progress_label.setText("")
+            self._status_bar.showMessage(f"Loaded: {n} pages", 5000)
             self._btn_translate.setEnabled(True)
             self._btn_save.setEnabled(False)
             self._btn_prev.setEnabled(True)
@@ -344,9 +483,12 @@ class MainWindow(QMainWindow):
         self._display_trans = None
 
     def _make_session_dir(self, src_path: Path) -> None:
+        if not Config.save_session_copies():
+            self._session_dir = None
+            return
         from datetime import datetime
         ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        base = Path.home() / ".pdftranslator" / "output" / f"{src_path.stem}_{ts}"
+        base = Config.app_state_dir() / "sessions" / f"{src_path.stem}_{ts}"
         base.mkdir(parents=True, exist_ok=True)
         self._session_dir = base
         _log.info("Session dir: %s", base)
@@ -366,10 +508,11 @@ class MainWindow(QMainWindow):
     def _save_session_log(self) -> None:
         if not self._session_dir: return
         try:
-            from pdftranslator.logging_config import LOG_FILE
+            from pdftranslator.logging_config import log_file_path
             import shutil
-            if LOG_FILE.exists():
-                shutil.copy2(str(LOG_FILE), str(self._session_dir / "session.log"))
+            log_file = log_file_path()
+            if log_file.exists():
+                shutil.copy2(str(log_file), str(self._session_dir / "session.log"))
         except Exception as exc:
             _log.warning("Log copy failed: %s", exc)
 
@@ -386,6 +529,15 @@ class MainWindow(QMainWindow):
         if not self._engine_orig: return
 
         provider_code = self._provider.currentData()
+        mode_code = self._mode.currentData()
+        current_page = self._original_viewer.current_page()
+        _log.info(
+            "Translate clicked: provider=%s mode=%s current_page=%d translated_pages=%d",
+            provider_code,
+            mode_code,
+            current_page + 1,
+            len(self._translated_pages),
+        )
         if not self._get_provider_key(provider_code):
             name = PROVIDER_NAMES.get(provider_code, provider_code)
             if QMessageBox.question(self, "API Key Missing", f"No key for {name}. Open Settings?") == QMessageBox.StandardButton.Yes:
@@ -405,12 +557,22 @@ class MainWindow(QMainWindow):
 
         pages = self._determine_pages(provider_code)
         self._tracking_active = self._mode.currentData() == "track"
+        _log.info(
+            "Translation plan: provider=%s mode=%s pages=%s tracking=%s",
+            provider_code,
+            mode_code,
+            [page + 1 for page in pages],
+            self._tracking_active,
+        )
 
         if not pages:
             if self._tracking_active:
-                self._status_bar.showMessage("Tracking mode armed. Open a page that is not translated yet.", 4000)
+                self._task_label.setText("Task: Tracking armed")
+                self._progress_label.setText("Tracking armed")
             else:
-                self._status_bar.showMessage("All selected pages are already translated", 3000)
+                human_page = current_page + 1
+                self._task_label.setText(f"Task: page {human_page}")
+                self._progress_label.setText(f"Skipped page {human_page}: already translated")
             self._btn_translate.setEnabled(True)
             self._btn_load.setEnabled(True)
             return
@@ -430,6 +592,11 @@ class MainWindow(QMainWindow):
             if not self._engine_orig or not self._output_path:
                 raise RuntimeError("Missing source PDF for BabelDOC output initialization")
             import shutil
+            _log.info(
+                "Initializing BabelDOC output from source copy: %s -> %s",
+                self._engine_orig._path,
+                self._output_path,
+            )
             shutil.copy2(self._engine_orig._path, self._output_path)
             self._engine_trans = PDFEngine(str(self._output_path))
             self._save_translation_state()
@@ -460,7 +627,16 @@ class MainWindow(QMainWindow):
             candidates = [p for p in [current - 1, current, current + 1] if 0 <= p < self._engine_orig.page_count]
         else:
             candidates = [current]
-        return [page for page in candidates if page not in self._translated_pages]
+        selected = [page for page in candidates if page not in self._translated_pages]
+        _log.info(
+            "Page selection: mode=%s current=%d candidates=%s selected=%s already_done=%s",
+            mode,
+            current + 1,
+            [page + 1 for page in candidates],
+            [page + 1 for page in selected],
+            [page + 1 for page in sorted(self._translated_pages)],
+        )
+        return selected
 
     def _start_worker(self, pages: list[int]) -> None:
         if not self._engine_orig:
@@ -476,10 +652,24 @@ class MainWindow(QMainWindow):
         self._btn_load.setEnabled(False)
         self._btn_stop.setEnabled(True)
         self._progress_bar.setVisible(True)
-        self._progress_bar.setMaximum(len(pages))
-        self._progress_bar.setValue(0)
-        self._status_bar.showMessage(
-            f"Translating {len(pages)} page(s): {self._page_label_text(pages)}"
+        self._task_label.setText(f"Task: {self._page_label_text(pages)}")
+        self._progress_label.setText("")
+        if use_babeldoc:
+            self._progress_bar.setMaximum(100)
+            self._progress_bar.setValue(0)
+            self._progress_label.setText("Preparing BabelDOC job...")
+        else:
+            self._progress_bar.setMaximum(len(pages))
+            self._progress_bar.setValue(0)
+            self._progress_label.setText(
+                f"Translating page(s): {self._page_label_text(pages)}"
+            )
+        _log.info(
+            "Starting worker: provider=%s babeldoc=%s pages=%s output=%s",
+            provider_code,
+            use_babeldoc,
+            [page + 1 for page in pages],
+            self._output_path,
         )
 
         worker_src = PDFEngine(self._engine_orig._path) if self._engine_orig._path else self._engine_orig
@@ -491,7 +681,7 @@ class MainWindow(QMainWindow):
             output_path=str(self._output_path),
             babeldoc_provider=babeldoc_provider_config(provider_code) if use_babeldoc else None,
             session_dir=str(self._session_dir) if self._session_dir else None,
-            verbose=self._chk_verbose.isChecked(),
+            verbose=self._act_verbose.isChecked(),
             page_window_label=self._page_label_text(pages),
         )
         self._worker = TranslateWorker(
@@ -501,18 +691,36 @@ class MainWindow(QMainWindow):
             job,
         )
         self._worker.page_progress.connect(self._on_page_done)
+        self._worker.backend_progress.connect(self._on_backend_progress)
         self._worker.translation_finished.connect(self._on_translation_done)
         self._worker.error_occurred.connect(self._on_translation_error)
         self._worker.start()
 
+    def _on_backend_progress(self, percent: int, message: str) -> None:
+        self._progress_bar.setMaximum(100)
+        self._progress_bar.setValue(percent)
+        self._progress_label.setText(f"{percent}% - {message}")
+        _log.info("Backend progress: %s%% %s", percent, message)
+
     def _on_page_done(self, done: int, total: int, page_num: int) -> None:
-        self._progress_bar.setValue(done)
+        if uses_babeldoc(self._provider.currentData()):
+            self._progress_bar.setMaximum(100)
+            self._progress_bar.setValue(100)
+            self._progress_label.setText(
+                f"Done: translated page {page_num + 1}"
+            )
+        else:
+            self._progress_bar.setValue(done)
+            self._progress_label.setText(f"Built {done}/{total}")
         n = self._engine_orig.page_count if self._engine_orig else total
         self._page_total_label.setText(f"/ {n}  [{done}/{total}]")
         self._mark_pages_translated([page_num])
 
-        self._reload_translated_output(refresh_output_engine=uses_babeldoc(self._provider.currentData()))
-        self._status_bar.showMessage(f"Built page {page_num + 1}", 2000)
+        self._reload_translated_output(
+            refresh_output_engine=uses_babeldoc(self._provider.currentData()),
+            changed_pages=[page_num],
+        )
+        self._task_label.setText(f"Task: {self._page_label_text(self._active_job_pages)}")
 
     def _on_translation_done(self) -> None:
         _log.info("Translation batch complete")
@@ -523,35 +731,62 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         import time
         self._last_batch_done = time.time()
-        self._reload_translated_output(refresh_output_engine=uses_babeldoc(self._provider.currentData()))
+        self._reload_translated_output(
+            refresh_output_engine=uses_babeldoc(self._provider.currentData()),
+            changed_pages=self._active_job_pages,
+        )
         self._save_translation_state()
         if self._tracking_active:
-            self._status_bar.showMessage("Tracking mode active — open another page to translate it.", 0)
+            self._task_label.setText("Task: Tracking active")
+            self._progress_label.setText("Tracking active")
         elif self._engine_trans and self._engine_trans.page_count > 0:
-            self._status_bar.showMessage("Done — scroll, translate more, or Save As...", 0)
+            self._task_label.setText("")
+            self._progress_label.setText(
+                f"Done: {self._page_label_text(self._active_job_pages) or 'batch'}"
+            )
         else:
-            self._status_bar.showMessage("Done", 0)
+            self._task_label.setText("")
+            self._progress_label.setText("Done")
         self._active_job_pages = []
 
-    def _reload_translated_output(self, refresh_output_engine: bool = False) -> None:
+    def _reload_translated_output(
+        self,
+        refresh_output_engine: bool = False,
+        changed_pages: list[int] | None = None,
+    ) -> None:
         if not self._output_path or not self._output_path.exists():
+            _log.info("Display reload skipped: missing output path")
             return
         try:
-            if refresh_output_engine and self._engine_trans:
-                try:
-                    self._engine_trans.close()
-                except Exception as exc:
-                    _log.warning("Output engine close failed: %s", exc)
-            if refresh_output_engine:
-                self._engine_trans = PDFEngine(str(self._output_path))
-            self._close_display_engine()
-            self._display_trans = PDFEngine(str(self._output_path))
+            _log.info(
+                "Reloading translated output: refresh_output_engine=%s path=%s changed_pages=%s",
+                refresh_output_engine,
+                self._output_path,
+                [page + 1 for page in changed_pages] if changed_pages else [],
+            )
             saved = self._original_viewer.verticalScrollBar().value()
-            tv = self._translated_viewer
-            tv.verticalScrollBar().blockSignals(True)
-            tv.set_engine(self._display_trans)
-            tv.verticalScrollBar().setValue(saved)
-            tv.verticalScrollBar().blockSignals(False)
+
+            if refresh_output_engine and self._engine_trans:
+                self._engine_trans.reload_from_path()
+            elif refresh_output_engine and not self._engine_trans:
+                self._engine_trans = PDFEngine(str(self._output_path))
+
+            if not self._display_trans:
+                self._display_trans = PDFEngine(str(self._output_path))
+                tv = self._translated_viewer
+                tv.verticalScrollBar().blockSignals(True)
+                tv.set_engine(self._display_trans)
+                tv.verticalScrollBar().setValue(saved)
+                tv.verticalScrollBar().blockSignals(False)
+                _log.info("Reloaded translated output into viewer with fresh engine")
+                return
+
+            self._display_trans.reload_from_path()
+            self._translated_viewer.refresh_document(changed_pages)
+            self._translated_viewer.verticalScrollBar().blockSignals(True)
+            self._translated_viewer.verticalScrollBar().setValue(saved)
+            self._translated_viewer.verticalScrollBar().blockSignals(False)
+            _log.info("Reloaded translated output into viewer via partial refresh")
         except Exception as exc:
             _log.warning("Display reload failed: %s", exc)
 
@@ -563,7 +798,8 @@ class MainWindow(QMainWindow):
         self._progress_bar.setVisible(False)
         self._tracking_active = False
         self._active_job_pages = []
-        self._status_bar.showMessage(f"Error: {error}", 10000)
+        self._task_label.setText("")
+        self._progress_label.setText("Error")
         QMessageBox.critical(self, "Translation Error", error)
 
     def _on_stop(self) -> None:
@@ -610,6 +846,11 @@ class MainWindow(QMainWindow):
             if self._worker.isRunning():
                 self._worker.wait(5000)
             self._worker = None
+        try:
+            self._original_viewer.shutdown()
+            self._translated_viewer.shutdown()
+        except Exception as exc:
+            _log.warning("Viewer shutdown failed: %s", exc)
         self._save_translation_state()
         self._save_session_log()
         self._cleanup_engines()
@@ -631,11 +872,18 @@ class MainWindow(QMainWindow):
                 data = json.loads(state_path.read_text())
                 pages = data.get("translated_pages", [])
                 self._translated_pages = {int(page) for page in pages if 0 <= int(page) < self._engine_orig.page_count}
+                _log.info(
+                    "Loaded translation state from %s: pages=%s",
+                    state_path,
+                    [page + 1 for page in sorted(self._translated_pages)],
+                )
                 return
             except Exception as exc:
                 _log.warning("Failed to load translation state: %s", exc)
-        if self._output_path.exists():
-            self._translated_pages = set(range(self._engine_orig.page_count))
+        _log.info(
+            "No valid translation state file for %s; translated page cache starts empty",
+            self._output_path,
+        )
 
     def _save_translation_state(self) -> None:
         if not self._output_path:

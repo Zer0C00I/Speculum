@@ -179,12 +179,17 @@ class PDFEngine:
             height=rect.height,
         )
 
-    def render_page_pixmap(self, page_num: int, dpi: float = 150) -> fitz.Pixmap:
+    def render_page_pixmap(
+        self,
+        page_num: int,
+        dpi: float = 150,
+        clip: fitz.Rect | None = None,
+    ) -> fitz.Pixmap:
         if page_num >= self._doc.page_count:
             return fitz.Pixmap(fitz.csRGB, irange=(0, 0, 1, 1), alpha=False)
         page = self._doc[page_num]
         mat = fitz.Matrix(dpi / 72, dpi / 72)
-        return page.get_pixmap(matrix=mat)
+        return page.get_pixmap(matrix=mat, clip=clip)
 
     def page_pixel_size(self, page_num: int, dpi: float = 150) -> tuple[int, int]:
         if page_num >= self._doc.page_count:
@@ -255,7 +260,24 @@ class PDFEngine:
         self._doc.save(path, garbage=4, deflate=True)
 
     def close(self) -> None:
+        if self._is_doc_closed():
+            return
         self._doc.close()
+
+    def reload_from_path(self) -> None:
+        if not self._path:
+            raise RuntimeError("Cannot reload PDFEngine without a file path")
+        _log.info("Reloading PDF: %s", self._path)
+        if not self._is_doc_closed():
+            self._doc.close()
+        self._doc = fitz.open(self._path)
+        _log.info("PDF reloaded: %d pages", self._doc.page_count)
+
+    def _is_doc_closed(self) -> bool:
+        try:
+            return bool(getattr(self._doc, "is_closed", False))
+        except Exception:
+            return True
 
     def save_atomic(self, path: str) -> None:
         import tempfile
