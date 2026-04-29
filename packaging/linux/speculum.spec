@@ -55,7 +55,12 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        "onnxruntime.quantization",
+        "pycparser.lextab",
+        "pycparser.yacctab",
+        "scipy.special._cdflib",
+    ],
     noarchive=False,
     optimize=0,
 )

@@ -13,10 +13,16 @@ rm -rf "${DIST_DIR}" "${BUILD_DIR}"
 pyinstaller --noconfirm --clean "${PYI_SPEC}"
 
 mkdir -p "${APPDIR}/usr/bin" "${APPDIR}/usr/lib/speculum"
+mkdir -p "${APPDIR}/usr/share/metainfo"
+mkdir -p "${APPDIR}/usr/share/applications"
+mkdir -p "${APPDIR}/usr/share/icons/hicolor/scalable/apps"
 cp "${ROOT_DIR}/packaging/linux/AppRun" "${APPDIR}/AppRun"
 chmod +x "${APPDIR}/AppRun"
 cp "${ROOT_DIR}/packaging/linux/speculum.desktop" "${APPDIR}/speculum.desktop"
 cp "${ROOT_DIR}/packaging/linux/speculum.svg" "${APPDIR}/speculum.svg"
+cp "${ROOT_DIR}/packaging/linux/speculum.appdata.xml" "${APPDIR}/usr/share/metainfo/speculum.appdata.xml"
+cp "${ROOT_DIR}/packaging/linux/speculum.desktop" "${APPDIR}/usr/share/applications/speculum.desktop"
+cp "${ROOT_DIR}/packaging/linux/speculum.svg" "${APPDIR}/usr/share/icons/hicolor/scalable/apps/speculum.svg"
 
 cp -a "${DIST_DIR}/speculum/." "${APPDIR}/usr/lib/speculum/"
 

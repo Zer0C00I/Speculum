@@ -1,5 +1,8 @@
 name: Build AppImage
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 on:
   workflow_dispatch:
   push:
@@ -25,6 +28,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            appstream \
             libegl1 \
             libfuse2 \
             libgl1 \
