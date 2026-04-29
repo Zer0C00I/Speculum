@@ -19,7 +19,7 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
   echo "Missing virtualenv interpreter: $VENV_PYTHON" >&2
   echo "Create it with:" >&2
   echo "  PYENV_VERSION=$PYENV_VERSION_NAME pyenv exec python -m venv .venv" >&2
-  echo "  .venv/bin/python -m pip install -e . -e ./BabelDOC" >&2
+  echo "  .venv/bin/python -m pip install -e ." >&2
   exit 1
 fi
 
