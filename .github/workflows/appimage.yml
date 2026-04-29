@@ -6,11 +6,17 @@ env:
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish, for example v0.1. Leave empty to only build."
+        required: false
+        type: string
   push:
     branches:
       - master
-    tags:
-      - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   appimage:
@@ -68,9 +74,24 @@ jobs:
           chmod +x scripts/build_appimage.sh packaging/linux/AppRun
           ./scripts/build_appimage.sh
 
+      - name: Rename AppImage for release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        run: |
+          arch="$(uname -m)"
+          mv "dist/Speculum-${arch}.AppImage" "dist/Speculum-${{ inputs.version }}-${arch}.AppImage"
+
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
         with:
           name: Speculum-AppImage
           path: dist/*.AppImage
           if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ inputs.version }}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Speculum $tag" --notes ""
+          gh release upload "$tag" dist/*.AppImage --clobber
