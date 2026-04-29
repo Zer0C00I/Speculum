@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>speculum</id>
+  <id>io.github.Zer0C00I.Speculum</id>
   <name>Speculum</name>
   <summary>Side-by-side PDF translation reader</summary>
   <metadata_license>MIT</metadata_license>
