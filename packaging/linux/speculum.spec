@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import copy_metadata
 
 
@@ -23,12 +24,20 @@ for package in [
     "babeldoc",
     "rapidocr_onnxruntime",
     "onnxruntime",
-    "skimage",
-    "sklearn",
     "xsdata",
     "rtree",
 ]:
     merge_collect(package, datas, binaries, hiddenimports)
+
+datas += collect_data_files("skimage")
+datas += collect_data_files("sklearn")
+
+hiddenimports += [
+    "skimage.metrics",
+    "skimage.metrics._structural_similarity",
+    "sklearn.cluster",
+    "sklearn.cluster._dbscan",
+]
 
 datas += copy_metadata("pdftranslator")
 datas += copy_metadata("openai")
