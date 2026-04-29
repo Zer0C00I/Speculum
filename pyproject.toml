@@ -2,14 +2,42 @@
 name = "pdftranslator"
 version = "0.1.0"
 description = "PDF translator with AI, preserving layout and images"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "PySide6>=6.7",
-    "PyMuPDF>=1.24",
-    "openai>=1.30",
+    "PyMuPDF>=1.25.1",
+    "openai>=1.59.3",
     "anthropic>=0.30",
     "python-dotenv>=1.0",
     "Pillow>=10.0",
+    "bitstring>=4.3.0",
+    "configargparse>=1.7",
+    "httpx[socks]>=0.27.0",
+    "numpy>=2.0.2",
+    "onnx>=1.18.0",
+    "onnxruntime>=1.16.1",
+    "orjson>=3.10.14",
+    "charset-normalizer>=2.0.0",
+    "cryptography>=36.0.0",
+    "peewee>=3.17.8",
+    "psutil>=7.0.0",
+    "rich>=13.9.4",
+    "tqdm>=4.67.1",
+    "xsdata[cli,lxml,soap]>=24.12",
+    "msgpack>=1.1.0",
+    "tenacity>=9.0.0",
+    "scikit-image>=0.25.2",
+    "freetype-py>=2.5.1",
+    "tiktoken>=0.9.0",
+    "Levenshtein>=0.27.1",
+    "opencv-python-headless>=4.10.0.84",
+    "rapidocr-onnxruntime>=1.4.4",
+    "pyzstd>=0.17.0",
+    "hyperscan>=0.7.13",
+    "rtree>=1.4.0",
+    "chardet>=5.2.0",
+    "regex>=2024.11.6",
+    "scikit-learn>=1.7.1",
 ]
 
 [project.scripts]

@@ -5,7 +5,6 @@ import shutil
 import sys
 import tempfile
 import threading
-import time
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,10 +43,6 @@ class BabelDocProviderConfig:
     base_url: str
 
 
-def bundled_babeldoc_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "BabelDOC"
-
-
 def uses_babeldoc(provider: str) -> bool:
     return provider.startswith("babeldoc-")
 
@@ -61,10 +56,6 @@ def run_babeldoc(
     api_key = request.provider.api_key.strip()
     if not api_key:
         raise BabelDocError(f"{request.provider.label} API key is not set")
-
-    bundle_dir = bundled_babeldoc_dir()
-    if not bundle_dir.is_dir():
-        raise BabelDocError(f"Bundled BabelDOC directory not found: {bundle_dir}")
 
     if sys.version_info[:2] != (3, 12):
         raise BabelDocError(
@@ -89,7 +80,6 @@ def run_babeldoc(
         f"source_lang={request.source_lang} target_lang={request.target_lang} "
         f"pages={_page_numbers_to_ranges(request.page_numbers)}"
     )
-    log_line(f"Bundle dir: {bundle_dir}")
     log_line(f"Working root: {working_root}")
     log_line(f"Output dir: {output_dir}")
 
@@ -102,7 +92,7 @@ def run_babeldoc(
 
     try:
         log_line("Importing BabelDOC modules")
-        modules = _load_babeldoc(bundle_dir)
+        modules = _load_babeldoc()
         log_line("Creating OpenAI-compatible translator")
         translator = modules["OpenAITranslator"](
             lang_in=request.source_lang,
@@ -179,7 +169,7 @@ def run_babeldoc(
             raise
         raise BabelDocError(
             "BabelDOC failed in-process. Ensure Python 3.12 is used and its "
-            "dependencies from BabelDOC/pyproject.toml are installed."
+            "dependencies are installed."
         ) from exc
     finally:
         stop_polling.set()
@@ -205,10 +195,9 @@ def _poll_cancel(
         stop_polling.wait(0.2)
 
 
-def _load_babeldoc(bundle_dir: Path) -> dict[str, Any]:
+def _load_babeldoc() -> dict[str, Any]:
     global _BABELDOC_READY
     if not _BABELDOC_READY:
-        sys.path.insert(0, str(bundle_dir))
         import babeldoc.format.pdf.high_level as high_level
         from babeldoc.docvision.doclayout import DocLayoutModel
         from babeldoc.format.pdf.translation_config import TranslationConfig
